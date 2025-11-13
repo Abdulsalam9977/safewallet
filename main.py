@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import bcrypt
 import hashlib
 import hmac
@@ -6,6 +8,8 @@ import smtplib
 from email.mime.text import MIMEText
 import pyotp
 import base64
+
+import requests
 
 
 def hash_password(password):
@@ -61,3 +65,55 @@ def send_email(email,otp):
         server.sendmail(message['From'],message['To'], message.as_string())
 
 # send_email()
+
+
+def send_alert(email, subject, body):
+    message = MIMEText(body)
+    message['Subject'] = subject
+    message['From'] = 'ishaqabdulsalam811@gmail.com'
+    message['To'] = email
+
+    with smtplib.SMTP('smtp.gmail.com', 587) as server:
+        server.starttls()
+        server.login('ishaqabdulsalam811@gmail.com', 'ryid rqnl rhrh nhax')
+        server.sendmail(message['From'], message['To'], message.as_string())
+
+
+def generate_ip(ip_address):
+    url = "http://ipapi.co/{ip_address}/json"
+
+    addr = requests.get(url).json()
+
+    city = addr['city']
+    region = addr['region']
+    country = addr['country']
+
+    address = f"near {city}, {region}, {country}"
+
+    return address
+
+def send_mail(email,body,subject):
+    message = MIMEText(body)
+    message['Subject'] = subject
+    message['From'] = 'ishaqabdulsalam811@gmail.com'
+    message['To'] = email
+
+
+    with smtplib.SMTP('smtp.gmail.com', 587) as server:
+        server.starttls()
+        server.login('ishaqabdulsalam811@gmail.com', 'ryid rqnl rhrh nhax')
+        server.sendmail(message['From'],message['To'], message.as_string())
+
+    return True
+
+
+# def send_login_alert(email,ip_address):
+#     timestamp = datetime.now().strftime('%d-%m-%Y %H:%M:%S')
+#     address = generate_ip(ip_address)
+#     body = f"a new login was detected on your account {address} at {timestamp}"
+#     subject = "Login Alert"
+#
+#     if send_mail(email,body,subject):
+#         return True
+#
+#     return False

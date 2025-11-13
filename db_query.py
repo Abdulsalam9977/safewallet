@@ -41,15 +41,26 @@ def create_table():
     created_at TIMESTAMP DEFAULT now())
     """)
     conn.commit()
-    # cursor.execute("""
-    # DROP TABLE IF EXISTS u_users,user_transactions CASCADE;""")
-    # conn.commit()
-    # print('table deleted')
+    cursor.execute("""
+    DROP TABLE kyc_verification;""")
+    conn.commit()
+    print('table created')
 
 
-create_table()
-
-
+# create_table()
+def table():
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS kyc_verification (
+    user_id UUID PRIMARY KEY REFERENCES u_users(user_id) ON DELETE CASCADE,
+    document TEXT,
+    identity TEXT,
+    status VARCHAR(20) DEFAULT 'pending'
+    )
+    """)
+    conn.commit()
+table()
 def register_user(name,username, email, password,role = None,is_frozen = False):
     conn = connect_db()
     cursor = conn.cursor()
@@ -79,13 +90,13 @@ def get_user(username = None,user_id = None):
     conn = connect_db()
     cursor = conn.cursor()
     cursor.execute("""
-    SELECT * FROM u_users WHERE username = %s or user_id = %s
+    SELECT * FROM u_users WHERE username = %s OR user_id = %s;
     """, (username,user_id,)
     )
     users = cursor.fetchone()
     user_dict = {}
     if users:
-        user_id, name, username, email, password, balance, role, is_frozen, created_at = users
+        user_id, name, username, email, password, balance, role, is_frozen, created_at,approved = users
 
         user_dict["user_id"] = user_id
         user_dict["name"] = name
@@ -96,6 +107,7 @@ def get_user(username = None,user_id = None):
         user_dict["role"] = role
         user_dict["is_frozen"] = is_frozen
         user_dict["created_at"] = created_at
+        user_dict["approved"] = approved
 
         return user_dict
     return None
@@ -112,10 +124,6 @@ def login_user(username, password):
         return {
             "error": "Invalid password",
         },400
-    # if user["is_frozen"]:
-    #     return {
-    #         "error": "inactive user.",
-    #     },404
     session_id = f'{user["user_id"]}:{user["role"]}'
     r.setex(username,3600, session_id)
     return {'status': 'success', 'session_id': session_id}, 200
@@ -130,6 +138,10 @@ def deposit(amount, user_id):
     if int(amount) < 100:
         return {
             "error": "Invalid amount"
+        },400
+    if user["approved"] == False:
+        return {
+            "error": "you cannot perform this action because your account has not been approved.",
         },400
 
     conn = connect_db()
@@ -162,8 +174,13 @@ def withdraw(amount, user_id):
             "error": "Invalid amount"
         },400
 
+
     if int(amount) > user.get("balance"):
         return {"error": "Insufficient funds"}, 403
+    if user["approved"] == False:
+        return {
+            "error": "you cannot perform this action because your account has not been approved.",
+        },400
     conn = connect_db()
     cursor = conn.cursor()
     cursor.execute("""
@@ -265,7 +282,7 @@ def freeze_wallet(username):
     )
     conn.commit()
     return True
-print(freeze_wallet('abdul00'))
+# print(freeze_wallet('abdul00'))
 
 def unfreeze_wallet(username):
     user = get_user(username)
@@ -279,7 +296,7 @@ def unfreeze_wallet(username):
     )
     conn.commit()
     return True
-
+# print(unfreeze_wallet('abdul00'))
 def delete_users(username):
     conn = connect_db()
     cursor = conn.cursor()
@@ -322,11 +339,11 @@ def view_dashboard(username):
         "name": user['name'],
         "username": user['username'],
         "email": user['email'],
-        "password": user['password'],
         "balance": user['balance'],
         "role": user['role'],
         "is_frozen": user['is_frozen'],
-        "created_at": user['created_at']
+        "created_at": user['created_at'],
+        "approved": user['approved'],
     }
     return dashboard,200
 

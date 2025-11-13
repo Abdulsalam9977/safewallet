@@ -1,10 +1,21 @@
-from flask import Flask,request,jsonify
+import os
+
+from flask import Flask, request, jsonify, url_for, send_from_directory
+from werkzeug.utils import secure_filename
 
 from db_query import deposit, freeze_wallet, unfreeze_wallet, transfer_funds, register_user, delete_users, \
-    login_user, get_user, transfer_funds, withdraw, view_dashboard, get_transactions
-from main import otp_requirement, generate_otp, verify_otp, send_email
+    login_user, get_user, transfer_funds, withdraw, view_dashboard, get_transactions, connect_db
+from main import otp_requirement, generate_otp, verify_otp, send_email, send_alert
 from session import r
 app = Flask(__name__)
+
+UPLOAD_FOLDER = 'uploads/kyc'
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif','pdf'}
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @app.post('/signup')
 def register():
@@ -31,6 +42,92 @@ def register():
         "message": 'user registered successfully',
         "user_id": new,
     }),200
+@app.post('/upload-kyc/<user_id>')
+def upload_kyc(user_id):
+    if 'document' not in request.files or 'identity' not in request.files:
+        return jsonify({"error": "both files are required"}), 400
+
+    document_file = request.files['document']
+    identity_file = request.files['identity']
+
+    if document_file.filename == '' or identity_file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+    if document_file and allowed_file(document_file.filename) and identity_file and allowed_file(identity_file.filename):
+        secure_doc_filename = secure_filename(document_file.filename)
+        secure_id_filename = secure_filename(identity_file.filename)
+        doc_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_doc_filename)
+        id_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_id_filename)
+
+        document_file.save(doc_path)
+        identity_file.save(id_path)
+
+        doc_url = url_for('uploaded_file', filename=f"kyc/{secure_doc_filename}", _external=True)
+        id_url = url_for('uploaded_file', filename=f"kyc/{secure_id_filename}", _external=True)
+
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+        UPDATE kyc_verification SET document = %s, identity = %s WHERE user_id = %s
+        """, (doc_url,id_url,user_id))
+        conn.commit()
+        conn.close()
+
+
+        return jsonify({"message": "kyc documents uploaded successfully",
+                        "status": 'pending',
+                        "document_url": doc_url,
+                        "identity_url": id_url
+                        }),201
+    return jsonify({"error": "file type not allowed"}), 400
+
+@app.get('/uploads/kyc/<filename>')
+def uploaded_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+@app.post('/verify-kyc/<username>/<user_id>')
+def verify_kyc(username,user_id):
+    session_id = request.headers.get('Session-Id')
+    if not session_id:
+        return jsonify({
+            'error': 'session id is required',
+        }),400
+    viewers_id,viewer_role = session_id.split(':')
+    if viewer_role == 'admin':
+
+
+
+
+        data = request.get_json()
+        decision = data.get('decision')
+        conn = connect_db()
+        cursor = conn.cursor()
+        if decision == 'approved':
+
+            cursor.execute("""
+            UPDATE kyc_verification SET status = 'approved' WHERE user_id = %s
+            """, (user_id,))
+            conn.commit()
+            cursor.execute("""
+            UPDATE u_users SET approved = TRUE WHERE user_id = %s
+            """, (user_id,))
+            conn.commit()
+        elif decision == 'declined':
+            cursor.execute("""
+            UPDATE kyc_verification SET status = 'declined' WHERE user_id = %s
+            """, (user_id,))
+            conn.commit()
+        return jsonify({
+            'message': "success",
+        }),200
+    stored_id = r.get(username)
+    unique, role = session_id.split(':')
+    if role != 'admin':
+        return jsonify({'error': 'unauthorized: only admin can verify users'}), 401
+    if stored_id != session_id:
+        return jsonify({
+            'error': 'invalid or expired session id',
+        }), 400
+
 
 @app.post('/login')
 def login():
@@ -91,10 +188,20 @@ def transfer():
         return jsonify({
             "message": "otp has been sent to your email, verify to make this transfer",
         }),200
-    message, status = withdraw(amount, user.get('username'))
+    message, status = withdraw(amount, user.get('user_id'))
     if status != 200:
         return jsonify(message)
     deposit(amount, receiver_user.get('user_id'))
+    user = get_user(sender_username)
+    receiver_user = get_user(receiver_username)
+    send_alert(user.get('email'), subject= "Money Sent", body= f"Hello {sender_username}, \n\n"
+                                                                            f"You sent ${amount} to {receiver_username}.\n"
+                                                                            f"Your new balance: ${user.get('balance'):.2f}\n")
+
+
+    send_alert(receiver_user.get('email'), subject= "Money Received", body= f"Hello {receiver_username}, \n\n"
+                                                                            f"You have received ${amount} from {user.get('username')}.\n"
+                                                                            f"Your new balance: ${receiver_user.get('balance'):.2f}\n")
     return jsonify({
         "message": "transfer successful",
     }),200
@@ -141,12 +248,12 @@ def withdrawal(user_id):
         return jsonify({
             "error": "session_id is required",
         }),400
+    user = get_user(username)
     stored_id = r.get(username)
     if stored_id != session_id:
         return jsonify({
             "error": "invalid or expired session id",
         }),400
-    user = get_user(username)
     if user['is_frozen']:
         return jsonify({
             "error": "You cannot withdraw because your account has been frozen",
@@ -188,7 +295,7 @@ def get_balance(username):
         return jsonify({
             "error": 'invalid username',
         }),400
-    stored_id = r.get(session_id)
+    stored_id = r.get(username)
     if stored_id != session_id:
         return jsonify({
             "error": "invalid or expired session id",
@@ -198,21 +305,21 @@ def get_balance(username):
     }),200
 @app.put('/<username>/freeze')
 def freeze_user(username):
-    session_id = request.headers.get('session_id')
+    session_id = request.headers.get('Session-Id')
     if not session_id:
         return jsonify({
             "error": 'session id is required',
         }),400
-    stored_id = r.get(session_id)
+    stored_id = r.get(username)
     unique_id, role = session_id.split(':')
-    if stored_id != session_id:
-        return jsonify({
-            "error": 'invalid or expired session id',
-        }),403
     if role != 'admin':
         return jsonify({
             "error": 'unauthorized',
         }),409
+    if stored_id != session_id:
+        return jsonify({
+            "error": 'invalid or expired session id',
+        }),403
     user = freeze_wallet(username)
     if not user:
         return jsonify({
@@ -224,21 +331,21 @@ def freeze_user(username):
 
 @app.put('/<username>/unfreeze')
 def unfreeze_user(username):
-    session_id = request.headers.get('session_id')
+    session_id = request.headers.get('Session-Id')
     if not session_id:
         return jsonify({
             "error": 'session id is required',
         }),400
-    stored_id = r.get(session_id)
+    stored_id = r.get(username)
     unique_id, role = session_id.split(':')
+    if role != 'admin':
+        return jsonify({
+            "error": 'unauthorized',
+        }),409
     if stored_id != session_id:
         return jsonify({
             "error": 'invalid or expired session id',
         }), 403
-    if role != 'admin':
-        return jsonify({
-            "error": 'unauthorized',
-        }), 409
     user = unfreeze_wallet(username)
     if not user:
         return jsonify({
